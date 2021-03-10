@@ -1,5 +1,6 @@
 import numpy as np, pandas as pd
 import argparse
+from sklearn.metrics import accuracy_score, classification_report
 
 
 class BonzLayer:
@@ -17,7 +18,7 @@ class BonzLayer:
 
 
 class BonzLinear(BonzLayer):
-    def __init__(self, input_dim, output_dim, bias=True):
+    def __init__(self, input_dim, output_dim, scale=0.1, bias=True):
         """
         Linear(X) = XW + B
         W: (i, o)
@@ -25,7 +26,7 @@ class BonzLinear(BonzLayer):
         B: (o)
         """
         super(BonzLinear, self).__init__()
-        self.weight = np.random.normal(scale=0.01, size=(input_dim, output_dim))
+        self.weight = np.random.normal(scale=scale, size=(input_dim, output_dim))
         if bias:
             self.bias = np.zeros(output_dim)
 
@@ -66,14 +67,31 @@ class BonzBCEwSigmoid(BonzLayer):
 
 
 class BonzModel():
-    def __init__(self, num_layer=2, layer_dims=[128, 1], lr=1e-3):
+    def __init__(self, num_layer=2, layer_dims=None, scale=0.1, lr=1e-3, training_data=None, testing_data=None):
         assert len(layer_dims) == num_layer and layer_dims[-1] == 1
         layer_dims = [54] + layer_dims
         self.layers = [
-            BonzLinear(input_dim=layer_dims[i], output_dim=layer_dims[i+1]) for i in range(len(layer_dims)-1)
+            BonzLinear(input_dim=layer_dims[i],
+                       output_dim=layer_dims[i+1],
+                       scale=scale
+                       ) for i in range(len(layer_dims)-1)
         ]
         self.loss_fn = BonzBCEwSigmoid()
         self.lr = lr
+
+        if training_data is not None:
+            self.train_data = training_data[:, 1:].astype(np.float)
+            self.train_label = training_data[:, 0].astype(np.float)
+
+        if testing_data is not None:
+            self.test_data = testing_data[:, 1:].astype(np.float)
+            self.test_label = testing_data[:, 0].astype(np.float)
+            self.val = True
+        else:
+            self.val = False
+
+    def sigmoid(self, inputs):
+        return 1 / (1 + np.exp(1) ** -inputs)
 
     def create_batches(self, shuffle=True, train=True):
         n = self.train_data.shape[0] if train else self.test_data.shape[0]
@@ -113,7 +131,12 @@ class BonzModel():
                     previous_grad = layer.backward(output_arr.pop(), previous_grad)
 
             avg_loss = np.array(loss_batch).mean()
-            print(f'Loss at epoch={epoch}: {avg_loss}')
+            test_predicts = self.validating_step() if self.val else None
+            val_accuracy = accuracy_score(self.test_label, test_predicts) if self.val else 0
+
+            print(f'Epoch {epoch:2d}: \t train_loss={avg_loss:.5f} \t val_accuracy={val_accuracy:.3f}')
+            if epoch == self.epoch-1:
+                print(classification_report(self.test_label, test_predicts))
 
     def testing_step(self):
         predicts = [] # Store loss every batch
@@ -126,15 +149,21 @@ class BonzModel():
                 inputs = layer(inputs)
             predicts.extend(inputs.squeeze().tolist())
 
-        return (sigmoid(np.array(predicts)) > 0.5).astype(np.int)
+        last_predicts = (self.sigmoid(np.array(predicts)) > 0.5).astype(np.int)
 
-    def train(self, training_data: np.ndarray, epoch=50, batch_size=32):
-        self.train_data = training_data[:, 1:].astype(np.float)
-        self.train_label = training_data[:, 0].astype(np.float)
+        return last_predicts
+
+    def validating_step(self):
+        predictions = self.testing_step()
+        return predictions
+
+    def train(self, training_data:np.ndarray=None, epoch=50, batch_size=32):
+        if training_data is not None:
+            self.train_data = training_data[:, 1:].astype(np.float)
+            self.train_label = training_data[:, 0].astype(np.float)
         self.epoch = epoch
         self.batch_size = batch_size
-
-        self.set_lr()
+        self.set_lr() # set learning for each layer inside
         self.training_step()
 
     def predict(self, test_data: np.ndarray):
@@ -145,15 +174,11 @@ class BonzModel():
 def get_args():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--num_layer', default=2)
-    parser.add_argument('--layer_dims', default=[128,1])
-    parser.add_argument('--lr', default=1e-3)
+    parser.add_argument('-l', '--num_layer', default=2, type=int)
+    parser.add_argument('-d', '--layer_dims', default=[128, 1], nargs='+', type=int, help='Example: 128 256 1 or 128')
+    parser.add_argument('-lr', '--lr', default=1e-3, help='Learning rate')
 
     return parser.parse_args()
-
-
-def sigmoid(inputs):
-    return 1 / (1 + np.exp(1)**-inputs)
 
 
 if __name__ == '__main__':
@@ -161,14 +186,14 @@ if __name__ == '__main__':
 
     # Load data
     training_data = np.loadtxt(open('data/testing_spam.csv'), delimiter=',').astype(np.int)
+    testing_spam = np.loadtxt(open('data/testing_spam.csv'), delimiter=',').astype(np.int)
 
     # Init model
-    classifier = BonzModel(num_layer=args.num_layer, layer_dims=args.layer_dims)
+    classifier = BonzModel(num_layer=args.num_layer, layer_dims=args.layer_dims, training_data=training_data, testing_data=testing_spam)
 
     # Train & test model
     classifier.train(training_data)
 
-    testing_spam = np.loadtxt(open('data/testing_spam.csv'), delimiter=',').astype(np.int)
     test_data = testing_spam[:, 1:]
     test_labels = testing_spam[:, 0]
 
